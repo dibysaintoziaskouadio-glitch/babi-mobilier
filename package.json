@@ -1,0 +1,18 @@
+{
+  "name": "babi-mobilier",
+  "private": true,
+  "workspaces": ["apps/*"],
+  "scripts": {
+    "dev": "npm run dev -w @babi/web",
+    "build": "npm run build -w @babi/web",
+    "typecheck": "npm run typecheck -w @babi/web && npm run typecheck -w @babi/api",
+    "db:setup": "psql \"$DATABASE_OWNER_URL\" -v ON_ERROR_STOP=1 -f database/schema.sql -f database/migrations/002_otp_challenges.sql -f database/migrations/003_users_identite.sql",
+    "db:generate": "prisma generate --schema database/schema.prisma",
+    "db:seed": "npm run db:seed -w @babi/web",
+    "test": "npm run test -w @babi/api"
+  },
+  "devDependencies": {
+    "prisma": "5.22.0"
+  },
+  "engines": { "node": ">=18.18" }
+}

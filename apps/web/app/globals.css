@@ -1,0 +1,22 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html { -webkit-tap-highlight-color: transparent; }
+  body { @apply bg-orange-50 text-encre font-sans antialiased; }
+  h1, h2, h3 { @apply font-display; text-wrap: balance; }
+  :focus-visible { @apply outline-none ring-2 ring-orange-500 ring-offset-2 ring-offset-orange-50; }
+}
+
+@layer components {
+  .btn { @apply inline-flex items-center justify-center gap-2 rounded-full px-5 py-3 font-display font-bold transition disabled:opacity-50; }
+  .btn-primary { @apply btn bg-orange-500 text-white hover:bg-orange-600; }
+  .btn-ghost { @apply btn border border-orange-200 bg-white text-encre hover:border-orange-400; }
+  .chip { @apply whitespace-nowrap rounded-full border border-orange-200 bg-white px-4 py-1.5 font-display text-sm font-semibold; }
+  .chip-on { @apply border-orange-500 bg-orange-500 text-white; }
+  .card { @apply rounded-carte border border-orange-100 bg-white; }
+  .field { @apply w-full rounded-2xl border border-orange-200 bg-white px-4 py-3 text-base placeholder:text-sable/70 focus:border-orange-500; }
+  .label { @apply mb-1 block text-sm font-semibold; }
+  .error { @apply mt-1 text-sm text-red-700; }
+}

@@ -1,0 +1,23 @@
+{
+  "name": "@babi/api",
+  "version": "0.1.0",
+  "private": true,
+  "exports": {
+    "./payments": "./src/modules/payments/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test src/modules/payments/cinetpay/cinetpay.client.test.ts",
+    "test:e2e": "tsx test/payments.e2e.ts"
+  },
+  "dependencies": {
+    "@prisma/client": "5.22.0",
+    "express": "4.21.2"
+  },
+  "devDependencies": {
+    "@types/express": "4.17.21",
+    "@types/node": "18.19.64",
+    "tsx": "4.19.2",
+    "typescript": "5.6.3"
+  }
+}

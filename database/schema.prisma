@@ -1,0 +1,730 @@
+// =============================================================================
+//  Babi Mobilier — Schéma Prisma (reflet de schema.sql)
+//
+//  schema.sql est la source de vérité : il contient ce que Prisma ne sait pas
+//  exprimer (CHECK, index partiels, colonnes générées, triggers, RLS, rôle).
+//  Mise en place :
+//    1. mkdir -p prisma/migrations/0_init
+//       cp schema.sql prisma/migrations/0_init/migration.sql
+//    2. npx prisma migrate deploy         (base vide)
+//       ou, base déjà créée : npx prisma migrate resolve --applied 0_init
+//    3. npx prisma generate
+//  Toute évolution : nouvelle migration SQL écrite à la main, puis mise à jour
+//  de ce fichier (vérifier avec `npx prisma migrate diff`).
+//
+//  Colonnes en lecture seule (générées par PostgreSQL) : products.search_vector,
+//  order_items.line_total_xof. Ne jamais les renseigner à l'écriture.
+//
+//  `prisma migrate diff` signale 3 écarts attendus, à ignorer : les deux colonnes
+//  générées ci-dessus et l'expression par défaut de orders.number.
+// =============================================================================
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [pgcrypto, citext, pg_trgm]
+}
+
+// -----------------------------------------------------------------------------
+// Énumérations
+// -----------------------------------------------------------------------------
+
+enum TenantStatus {
+  trial
+  active
+  past_due
+  suspended
+  closed
+
+  @@map("tenant_status")
+}
+
+enum UserRole {
+  super_admin
+  admin
+  vendeur
+  livreur
+  artisan
+  client
+
+  @@map("user_role")
+}
+
+enum OrderStatus {
+  en_attente_paiement
+  payee
+  confirmee
+  en_preparation
+  en_fabrication
+  prete
+  expediee
+  en_livraison
+  livree
+  annulee
+  remboursee
+  retournee
+
+  @@map("order_status")
+}
+
+enum OrderChannel {
+  web
+  pwa
+  whatsapp
+  showroom
+  api
+
+  @@map("order_channel")
+}
+
+enum MoyenPaiement {
+  orange_money
+  mtn_momo
+  moov
+  wave
+  carte
+  cash
+
+  @@map("moyen_paiement")
+}
+
+enum PaymentProvider {
+  cinetpay
+  paydunya
+  stripe
+  cash
+
+  @@map("payment_provider")
+}
+
+enum PaymentKind {
+  total
+  acompte
+  solde
+  remboursement
+
+  @@map("payment_kind")
+}
+
+enum PaymentStatus {
+  initie
+  en_attente
+  reussi
+  echoue
+  expire
+  rembourse
+  partiellement_rembourse
+
+  @@map("payment_status")
+}
+
+enum ZoneType {
+  abidjan
+  interieur
+  retrait_showroom
+
+  @@map("zone_type")
+}
+
+enum ShipmentStatus {
+  a_planifier
+  planifiee
+  enlevee
+  en_transit
+  en_livraison
+  livree
+  echec
+  retour
+
+  @@map("shipment_status")
+}
+
+enum DeliverySlot {
+  matin
+  apres_midi
+  soir
+
+  @@map("delivery_slot")
+}
+
+enum ReviewStatus {
+  en_moderation
+  publie
+  rejete
+
+  @@map("review_status")
+}
+
+enum PromoType {
+  pourcentage
+  montant_fixe
+  livraison_offerte
+
+  @@map("promo_type")
+}
+
+enum BillingCycle {
+  mensuel
+  annuel
+
+  @@map("billing_cycle")
+}
+
+enum SubStatus {
+  trialing
+  active
+  past_due
+  canceled
+
+  @@map("sub_status")
+}
+
+// -----------------------------------------------------------------------------
+// Tenants et utilisateurs
+// -----------------------------------------------------------------------------
+
+model Tenant {
+  id            String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  slug          String       @unique(map: "tenants_slug_key") @db.Citext
+  name          String
+  legalName     String?      @map("legal_name")
+  rccm          String?
+  ncc           String?
+  phone         String
+  email         String?      @db.Citext
+  city          String       @default("Abidjan")
+  status        TenantStatus @default(trial)
+  vatRegistered Boolean      @default(true) @map("vat_registered")
+  settings      Json         @default("{}")
+  createdAt     DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime     @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  users                User[]
+  userRoles            UserRole_[]
+  categories           Category[]
+  products             Product[]
+  variants             ProductVariant[]
+  images               ProductImage[]
+  deliveryZones        DeliveryZone[]
+  promotions           Promotion[]
+  promotionRedemptions PromotionRedemption[]
+  orders               Order[]
+  orderItems           OrderItem[]
+  payments             Payment[]
+  shipments            Shipment[]
+  reviews              Review[]
+  subscriptions        Subscription[]
+  auditLogs            AuditLog[]
+
+  @@index([status], map: "idx_tenants_status")
+  @@map("tenants")
+}
+
+/// tenantId NULL = client plateforme ; renseigné = membre d'équipe d'un marchand.
+/// Unicité du téléphone gérée en SQL par deux index partiels.
+model User {
+  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId        String?   @map("tenant_id") @db.Uuid
+  phone           String
+  email           String?   @db.Citext
+  fullName        String    @map("full_name")
+  /// Migration 003 : prénom et nom séparés (full_name reste la forme affichée)
+  firstName       String?   @map("first_name")
+  lastName        String?   @map("last_name")
+  passwordHash    String?   @map("password_hash")
+  phoneVerifiedAt DateTime? @map("phone_verified_at") @db.Timestamptz(6)
+  whatsappOptIn   Boolean   @default(false) @map("whatsapp_opt_in")
+  loyaltyPoints   Int       @default(0) @map("loyalty_points")
+  referralCode    String?   @unique(map: "users_referral_code_key") @map("referral_code")
+  referredById    String?   @map("referred_by") @db.Uuid
+  isActive        Boolean   @default(true) @map("is_active")
+  lastLoginAt     DateTime? @map("last_login_at") @db.Timestamptz(6)
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  tenant     Tenant? @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  referredBy User?   @relation("Referral", fields: [referredById], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  referrals  User[]  @relation("Referral")
+
+  roles                UserRole_[]
+  addresses            Address[]
+  orders               Order[]               @relation("OrderCustomer")
+  promotionRedemptions PromotionRedemption[]
+  cashCollected        Payment[]             @relation("CashCollector")
+  deliveries           Shipment[]            @relation("Courier")
+  reviews              Review[]              @relation("ReviewAuthor")
+  moderatedReviews     Review[]              @relation("ReviewModerator")
+  auditLogs            AuditLog[]
+
+  @@index([tenantId], map: "idx_users_tenant")
+  @@map("users")
+}
+
+/// Rôle d'un utilisateur au sein d'un tenant (nommé UserRole_ pour éviter le conflit avec l'enum UserRole).
+model UserRole_ {
+  userId    String   @map("user_id") @db.Uuid
+  tenantId  String   @map("tenant_id") @db.Uuid
+  role      UserRole
+  grantedAt DateTime @default(now()) @map("granted_at") @db.Timestamptz(6)
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([userId, tenantId, role])
+  @@index([tenantId, role], map: "idx_user_roles_tenant")
+  @@map("user_roles")
+}
+
+model Address {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  label     String   @default("Maison")
+  city      String
+  commune   String?
+  quartier  String?
+  landmark  String?
+  phone     String
+  lat       Decimal? @db.Decimal(9, 6)
+  lng       Decimal? @db.Decimal(9, 6)
+  isDefault Boolean  @default(false) @map("is_default")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  orders Order[]
+
+  @@index([userId], map: "idx_addresses_user")
+  @@map("addresses")
+}
+
+// -----------------------------------------------------------------------------
+// Catalogue
+// -----------------------------------------------------------------------------
+
+model Category {
+  id       String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId String  @map("tenant_id") @db.Uuid
+  parentId String? @map("parent_id") @db.Uuid
+  slug     String
+  name     String
+  position Int     @default(0) @db.SmallInt
+  imageUrl String? @map("image_url")
+  isActive Boolean @default(true) @map("is_active")
+
+  tenant   Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  parent   Category?  @relation("CategoryTree", fields: [parentId], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  children Category[] @relation("CategoryTree")
+  products Product[]
+
+  @@unique([tenantId, slug], map: "categories_tenant_slug_key")
+  @@index([tenantId, parentId, position], map: "idx_categories_parent")
+  @@map("categories")
+}
+
+model Product {
+  id             String                   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId       String                   @map("tenant_id") @db.Uuid
+  categoryId     String                   @map("category_id") @db.Uuid
+  slug           String
+  name           String
+  description    String?
+  style          String?
+  materials      String[]                 @default([])
+  basePriceXof   Int                      @map("base_price_xof")
+  vatRate        Decimal                  @default(18.00) @map("vat_rate") @db.Decimal(4, 2)
+  isCustomMade   Boolean                  @default(false) @map("is_custom_made")
+  depositPercent Int?                     @map("deposit_percent") @db.SmallInt
+  leadTimeDays   Int?                     @map("lead_time_days") @db.SmallInt
+  weightKg       Decimal?                 @map("weight_kg") @db.Decimal(7, 2)
+  volumeM3       Decimal?                 @map("volume_m3") @db.Decimal(6, 3)
+  arModelUrl     String?                  @map("ar_model_url")
+  isPublished    Boolean                  @default(false) @map("is_published")
+  ratingAvg      Decimal                  @default(0) @map("rating_avg") @db.Decimal(2, 1)
+  ratingCount    Int                      @default(0) @map("rating_count")
+  /// Colonne générée (lecture seule) — recherche plein texte via $queryRaw
+  searchVector   Unsupported("tsvector")? @map("search_vector")
+  createdAt      DateTime                 @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime                 @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  tenant   Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  category Category         @relation(fields: [categoryId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  variants ProductVariant[]
+  images   ProductImage[]
+  reviews  Review[]
+
+  @@unique([tenantId, slug], map: "products_tenant_slug_key")
+  @@index([tenantId, basePriceXof], map: "idx_products_price")
+  @@index([name(ops: raw("gin_trgm_ops"))], map: "idx_products_name_trgm", type: Gin)
+  @@index([searchVector], map: "idx_products_search", type: Gin)
+  @@index([materials], map: "idx_products_materials", type: Gin)
+  @@map("products")
+}
+
+model ProductVariant {
+  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId      String   @map("tenant_id") @db.Uuid
+  productId     String   @map("product_id") @db.Uuid
+  sku           String
+  /// {"dimensions":"220x90x85","bois":"iroko","tissu":"velours","couleur":"orange brûlé"}
+  attributes    Json     @default("{}")
+  widthCm       Int?     @map("width_cm") @db.SmallInt
+  depthCm       Int?     @map("depth_cm") @db.SmallInt
+  heightCm      Int?     @map("height_cm") @db.SmallInt
+  priceXof      Int      @map("price_xof")
+  compareAtXof  Int?     @map("compare_at_xof")
+  stock         Int      @default(0)
+  stockReserved Int      @default(0) @map("stock_reserved")
+  isActive      Boolean  @default(true) @map("is_active")
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  tenant     Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  product    Product        @relation(fields: [productId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  images     ProductImage[]
+  orderItems OrderItem[]
+
+  @@unique([tenantId, sku], map: "product_variants_tenant_sku_key")
+  @@index([productId], map: "idx_variants_product")
+  @@index([attributes(ops: JsonbPathOps)], map: "idx_variants_attrs", type: Gin)
+  @@map("product_variants")
+}
+
+model ProductImage {
+  id        String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId  String  @map("tenant_id") @db.Uuid
+  productId String  @map("product_id") @db.Uuid
+  variantId String? @map("variant_id") @db.Uuid
+  publicId  String  @map("public_id")
+  alt       String
+  isInSitu  Boolean @default(false) @map("is_in_situ")
+  position  Int     @default(0) @db.SmallInt
+
+  tenant  Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  product Product         @relation(fields: [productId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  variant ProductVariant? @relation(fields: [variantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([productId, position], map: "idx_product_images_product")
+  @@map("product_images")
+}
+
+// -----------------------------------------------------------------------------
+// Livraison et promotions
+// -----------------------------------------------------------------------------
+
+model DeliveryZone {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId    String   @map("tenant_id") @db.Uuid
+  type        ZoneType
+  name        String
+  communes    String[] @default([])
+  cities      String[] @default([])
+  baseFeeXof  Int      @map("base_fee_xof")
+  feePerM3Xof Int      @default(0) @map("fee_per_m3_xof")
+  minDays     Int      @map("min_days") @db.SmallInt
+  maxDays     Int      @map("max_days") @db.SmallInt
+  codAllowed  Boolean  @default(true) @map("cod_allowed")
+  codMaxXof   Int?     @map("cod_max_xof")
+  isActive    Boolean  @default(true) @map("is_active")
+
+  tenant    Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  orders    Order[]
+  shipments Shipment[]
+
+  @@unique([tenantId, name], map: "delivery_zones_tenant_name_key")
+  @@index([communes], map: "idx_delivery_zones_communes", type: Gin)
+  @@map("delivery_zones")
+}
+
+model Promotion {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId       String    @map("tenant_id") @db.Uuid
+  code           String?   @db.Citext
+  label          String
+  type           PromoType
+  value          Int
+  minOrderXof    Int       @default(0) @map("min_order_xof")
+  maxDiscountXof Int?      @map("max_discount_xof")
+  maxUses        Int?      @map("max_uses")
+  usedCount      Int       @default(0) @map("used_count")
+  maxUsesPerUser Int       @default(1) @map("max_uses_per_user") @db.SmallInt
+  categoryIds    String[]  @map("category_ids") @db.Uuid
+  startsAt       DateTime  @map("starts_at") @db.Timestamptz(6)
+  endsAt         DateTime  @map("ends_at") @db.Timestamptz(6)
+  isActive       Boolean   @default(true) @map("is_active")
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  tenant      Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  orders      Order[]
+  redemptions PromotionRedemption[]
+
+  @@unique([tenantId, code], map: "promotions_tenant_code_key")
+  @@map("promotions")
+}
+
+model PromotionRedemption {
+  promotionId String   @map("promotion_id") @db.Uuid
+  orderId     String   @map("order_id") @db.Uuid
+  userId      String   @map("user_id") @db.Uuid
+  tenantId    String   @map("tenant_id") @db.Uuid
+  discountXof Int      @map("discount_xof")
+  redeemedAt  DateTime @default(now()) @map("redeemed_at") @db.Timestamptz(6)
+
+  promotion Promotion @relation(fields: [promotionId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  order     Order     @relation(fields: [orderId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  tenant    Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([promotionId, orderId])
+  @@index([promotionId, userId], map: "idx_redemptions_user")
+  @@map("promotion_redemptions")
+}
+
+// -----------------------------------------------------------------------------
+// Commandes, paiements, expéditions
+// -----------------------------------------------------------------------------
+
+model Order {
+  id                 String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId           String       @map("tenant_id") @db.Uuid
+  /// BM-2026-000412, généré par la base
+  number             String       @unique(map: "orders_number_key") @default(dbgenerated("(('BM-'::text || to_char(now(), 'YYYY'::text)) || '-'::text) || lpad((nextval('order_number_seq'::regclass))::text, 6, '0'::text)"))
+  customerId         String       @map("customer_id") @db.Uuid
+  addressId          String?      @map("address_id") @db.Uuid
+  deliveryZoneId     String?      @map("delivery_zone_id") @db.Uuid
+  promotionId        String?      @map("promotion_id") @db.Uuid
+  status             OrderStatus  @default(en_attente_paiement)
+  channel            OrderChannel @default(web)
+  isB2b              Boolean      @default(false) @map("is_b2b")
+  isCustomMade       Boolean      @default(false) @map("is_custom_made")
+  deliverySnapshot   Json?        @map("delivery_snapshot")
+  subtotalHtXof      Int          @map("subtotal_ht_xof")
+  vatXof             Int          @map("vat_xof")
+  discountXof        Int          @default(0) @map("discount_xof")
+  shippingXof        Int          @default(0) @map("shipping_xof")
+  totalTtcXof        Int          @map("total_ttc_xof")
+  depositXof         Int          @default(0) @map("deposit_xof")
+  /// Maintenu par trigger à partir des paiements réussis
+  paidXof            Int          @default(0) @map("paid_xof")
+  customerNote       String?      @map("customer_note")
+  cancelledReason    String?      @map("cancelled_reason")
+  stockReservedUntil DateTime?    @map("stock_reserved_until") @db.Timestamptz(6)
+  placedAt           DateTime     @default(now()) @map("placed_at") @db.Timestamptz(6)
+  updatedAt          DateTime     @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  customer     User          @relation("OrderCustomer", fields: [customerId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  address      Address?      @relation(fields: [addressId], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  deliveryZone DeliveryZone? @relation(fields: [deliveryZoneId], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  promotion    Promotion?    @relation(fields: [promotionId], references: [id], onDelete: SetNull, onUpdate: NoAction)
+
+  items       OrderItem[]
+  payments    Payment[]
+  shipment    Shipment?
+  reviews     Review[]
+  redemptions PromotionRedemption[]
+
+  @@index([tenantId, status, placedAt(sort: Desc)], map: "idx_orders_tenant_status")
+  @@index([customerId, placedAt(sort: Desc)], map: "idx_orders_customer")
+  @@map("orders")
+}
+
+model OrderItem {
+  id           String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId     String  @map("tenant_id") @db.Uuid
+  orderId      String  @map("order_id") @db.Uuid
+  variantId    String  @map("variant_id") @db.Uuid
+  productName  String  @map("product_name")
+  variantLabel String  @map("variant_label")
+  unitPriceXof Int     @map("unit_price_xof")
+  quantity     Int     @db.SmallInt
+  vatRate      Decimal @default(18.00) @map("vat_rate") @db.Decimal(4, 2)
+  /// Colonne générée (unit_price_xof * quantity) — lecture seule
+  lineTotalXof Int?    @map("line_total_xof")
+
+  tenant  Tenant         @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  order   Order          @relation(fields: [orderId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  variant ProductVariant @relation(fields: [variantId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@index([orderId], map: "idx_order_items_order")
+  @@index([variantId], map: "idx_order_items_variant")
+  @@map("order_items")
+}
+
+model Payment {
+  id            String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId      String          @map("tenant_id") @db.Uuid
+  orderId       String          @map("order_id") @db.Uuid
+  refundOfId    String?         @map("refund_of_id") @db.Uuid
+  kind          PaymentKind     @default(total)
+  moyenPaiement MoyenPaiement   @map("moyen_paiement")
+  provider      PaymentProvider
+  providerTxId  String?         @map("provider_tx_id")
+  providerRef   String?         @map("provider_ref")
+  amountXof     Int             @map("amount_xof")
+  feeXof        Int             @default(0) @map("fee_xof")
+  status        PaymentStatus   @default(initie)
+  payerPhone    String?         @map("payer_phone")
+  failureReason String?         @map("failure_reason")
+  rawPayload    Json?           @map("raw_payload")
+  collectedById String?         @map("collected_by") @db.Uuid
+  remittedAt    DateTime?       @map("remitted_at") @db.Timestamptz(6)
+  expiresAt     DateTime?       @map("expires_at") @db.Timestamptz(6)
+  paidAt        DateTime?       @map("paid_at") @db.Timestamptz(6)
+  createdAt     DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime        @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  tenant      Tenant    @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  order       Order     @relation(fields: [orderId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  refundOf    Payment?  @relation("Refunds", fields: [refundOfId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  refunds     Payment[] @relation("Refunds")
+  collectedBy User?     @relation("CashCollector", fields: [collectedById], references: [id], onDelete: SetNull, onUpdate: NoAction)
+
+  @@unique([provider, providerTxId], map: "payments_provider_tx_key")
+  @@index([orderId], map: "idx_payments_order")
+  @@index([tenantId, status, createdAt(sort: Desc)], map: "idx_payments_tenant_status")
+  @@map("payments")
+}
+
+model Shipment {
+  id               String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId         String         @map("tenant_id") @db.Uuid
+  orderId          String         @unique(map: "shipments_order_key") @map("order_id") @db.Uuid
+  zoneId           String         @map("zone_id") @db.Uuid
+  zoneType         ZoneType       @map("zone_type")
+  courierId        String?        @map("courier_id") @db.Uuid
+  carrierName      String?        @map("carrier_name")
+  trackingCode     String?        @map("tracking_code")
+  status           ShipmentStatus @default(a_planifier)
+  scheduledFor     DateTime?      @map("scheduled_for") @db.Date
+  slot             DeliverySlot?
+  attempts         Int            @default(0) @db.SmallInt
+  recipientOtpHash String?        @map("recipient_otp_hash")
+  proofPhotoUrl    String?        @map("proof_photo_url")
+  failureReason    String?        @map("failure_reason")
+  shippedAt        DateTime?      @map("shipped_at") @db.Timestamptz(6)
+  deliveredAt      DateTime?      @map("delivered_at") @db.Timestamptz(6)
+  createdAt        DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime       @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  tenant  Tenant       @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  order   Order        @relation(fields: [orderId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  zone    DeliveryZone @relation(fields: [zoneId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  courier User?        @relation("Courier", fields: [courierId], references: [id], onDelete: SetNull, onUpdate: NoAction)
+
+  @@index([tenantId, status, scheduledFor], map: "idx_shipments_tenant_status")
+  @@map("shipments")
+}
+
+// -----------------------------------------------------------------------------
+// Avis, abonnements, audit
+// -----------------------------------------------------------------------------
+
+model Review {
+  id            String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId      String       @map("tenant_id") @db.Uuid
+  productId     String       @map("product_id") @db.Uuid
+  userId        String       @map("user_id") @db.Uuid
+  orderId       String       @map("order_id") @db.Uuid
+  rating        Int          @db.SmallInt
+  comment       String?
+  photos        String[]     @default([])
+  status        ReviewStatus @default(en_moderation)
+  moderatedById String?      @map("moderated_by") @db.Uuid
+  merchantReply String?      @map("merchant_reply")
+  createdAt     DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime     @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  tenant      Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  product     Product @relation(fields: [productId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  user        User    @relation("ReviewAuthor", fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  order       Order   @relation(fields: [orderId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  moderatedBy User?   @relation("ReviewModerator", fields: [moderatedById], references: [id], onDelete: SetNull, onUpdate: NoAction)
+
+  @@unique([productId, userId, orderId], map: "reviews_unique_per_order")
+  @@map("reviews")
+}
+
+model Plan {
+  id            String  @id
+  name          String
+  monthlyXof    Int     @map("monthly_xof")
+  yearlyXof     Int     @map("yearly_xof")
+  commissionBps Int     @map("commission_bps") @db.SmallInt
+  limits        Json    @default("{}")
+  isPublic      Boolean @default(true) @map("is_public")
+
+  subscriptions Subscription[]
+
+  @@map("plans")
+}
+
+/// Un seul abonnement vivant (trialing/active/past_due) par tenant : index partiel en SQL.
+model Subscription {
+  id                 String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId           String         @map("tenant_id") @db.Uuid
+  planId             String         @map("plan_id")
+  status             SubStatus      @default(trialing)
+  billingCycle       BillingCycle   @default(mensuel) @map("billing_cycle")
+  priceXof           Int            @map("price_xof")
+  currentPeriodStart DateTime       @map("current_period_start") @db.Date
+  currentPeriodEnd   DateTime       @map("current_period_end") @db.Date
+  trialEndsAt        DateTime?      @map("trial_ends_at") @db.Date
+  paymentMethod      MoyenPaiement? @map("payment_method")
+  cancelAtPeriodEnd  Boolean        @default(false) @map("cancel_at_period_end")
+  canceledAt         DateTime?      @map("canceled_at") @db.Timestamptz(6)
+  createdAt          DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime       @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  plan   Plan   @relation(fields: [planId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@map("subscriptions")
+}
+
+/// Ajout seul : UPDATE et DELETE bloqués par trigger et par droits.
+model AuditLog {
+  id        BigInt   @id @default(autoincrement())
+  tenantId  String?  @map("tenant_id") @db.Uuid
+  actorId   String?  @map("actor_id") @db.Uuid
+  actorType String   @default("user") @map("actor_type")
+  action    String
+  entity    String
+  entityId  String?  @map("entity_id") @db.Uuid
+  before    Json?
+  after     Json?
+  ip        String?  @db.Inet
+  userAgent String?  @map("user_agent")
+  requestId String?  @map("request_id")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  tenant Tenant? @relation(fields: [tenantId], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  actor  User?   @relation(fields: [actorId], references: [id], onDelete: SetNull, onUpdate: NoAction)
+
+  @@index([tenantId, createdAt(sort: Desc)], map: "idx_audit_tenant_time")
+  @@index([entity, entityId], map: "idx_audit_entity")
+  @@index([actorId, createdAt(sort: Desc)], map: "idx_audit_actor")
+  @@map("audit_logs")
+}
+
+// -----------------------------------------------------------------------------
+// Authentification (migration 002_otp_challenges.sql)
+// -----------------------------------------------------------------------------
+
+model OtpChallenge {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  phone      String
+  codeHash   String    @map("code_hash")
+  channel    String    @default("whatsapp")
+  attempts   Int       @default(0) @db.SmallInt
+  expiresAt  DateTime  @map("expires_at") @db.Timestamptz(6)
+  consumedAt DateTime? @map("consumed_at") @db.Timestamptz(6)
+  ip         String?   @db.Inet
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([phone, createdAt(sort: Desc)], map: "idx_otp_phone_time")
+  @@map("otp_challenges")
+}

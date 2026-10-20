@@ -66,3 +66,15 @@ npm run build                     # build de production
 ## À construire ensuite
 
 Images Cloudinary (upload depuis l'espace marchand), gestion des commandes et des livraisons côté marchand, app livreur (code de remise, encaissement cash), remboursements depuis l'interface, service worker pour le mode hors-ligne, notifications de suivi de livraison.
+
+## Mise en ligne sur Google Cloud
+
+Cloud Run (site, image `Dockerfile`) · Cloud SQL PostgreSQL 16 · Secret Manager · Cloud Scheduler (rapprochement toutes les 2 min, remplace le cron de `vercel.json`).
+
+```bash
+gcloud auth login                                  # une fois, dans le navigateur
+./deploy/gcp-deploy.sh babi-mobilier-prod --seed   # premier déploiement (avec catalogue de démo)
+./deploy/gcp-deploy.sh babi-mobilier-prod          # mises à jour suivantes
+```
+
+Le script crée le projet s'il n'existe pas, le rattache au compte de facturation, et peut être relancé sans risque. Les clés CinetPay et WhatsApp sont lues dans `apps/web/.env.local`, puis stockées dans Secret Manager. En production, `OTP_DEV_MODE` est désactivé : la connexion par code exige un numéro WhatsApp Business configuré (`WHATSAPP_PHONE_NUMBER_ID`).

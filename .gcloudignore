@@ -1,0 +1,10 @@
+# Fichiers non envoyés à Cloud Build (gcloud run deploy --source .)
+.git
+node_modules/
+**/node_modules/
+**/.next/
+**/.env
+**/.env.local
+**/.env.local.bak
+**/*.tsbuildinfo
+docs/
